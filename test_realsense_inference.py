@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Real-time human pose estimation using RealSense camera.
-Compares MediaPipe and MMPose 3D pose estimation in real-time.
+Compares MediaPipe and multiple MMPose 3D models in real-time.
 """
 
 import cv2
@@ -34,13 +34,12 @@ H36M_SKELETON = [
     (8, 14), (14, 15), (15, 16),      # Right arm
 ]
 
-class RealSensePoseEstimator:
+class RealSenseMultiPoseEstimator:
     def __init__(self):
         self.pipeline = None
         self.align = None
         self.running = False
         self.current_frame = None
-        self.current_depth = None
         self.frame_lock = threading.Lock()
         
         # Initialize MediaPipe
@@ -48,13 +47,11 @@ class RealSensePoseEstimator:
         if MEDIAPIPE_AVAILABLE:
             self.init_mediapipe()
         
-        # Initialize MMPose
-        self.mmpose_inferencer = None
+        # Initialize MMPose models
+        self.mmpose_videopose3d = None
+        self.mmpose_simplebaseline3d = None
+        self.mmpose_motionbert = None
         self.init_mmpose()
-        
-        # For performance (optional)
-        self.fps_counter = deque(maxlen=30)
-        self.last_time = time.time()
         
     def init_mediapipe(self):
         """Initialize MediaPipe pose landmarker."""
@@ -71,25 +68,46 @@ class RealSensePoseEstimator:
             self.mp_landmarker = None
     
     def init_mmpose(self):
-        """Initialize MMPose 3D estimator."""
+        """Initialize multiple MMPose 3D estimators."""
         try:
             from mmpose.apis import MMPoseInferencer
-            self.mmpose_inferencer = MMPoseInferencer(
-                pose3d='human3d',
-                device='cuda:0' if 'cuda' in 'cuda:0' else 'cpu'
-            )
-            print("✅ MMPose initialized successfully")
-        except Exception as e:
-            print(f"❌ Failed to initialize MMPose: {e}")
+            device = 'cuda:0' if 'cuda' in 'cuda:0' else 'cpu'
+            
+            # VideoPose3D
             try:
-                self.mmpose_inferencer = MMPoseInferencer(
-                    pose3d='human3d',
-                    device='cpu'
+                self.mmpose_videopose3d = MMPoseInferencer(
+                    pose3d='configs/body_3d_keypoint/video_pose_lift/h36m/video-pose-lift_tcn-243frm-supv_8xb128-160e_h36m.py', 
+                    pose3d_weights='https://download.openmmlab.com/mmpose/body3d/videopose/videopose_h36m_243frames_fullconv_supervised-880bea25_20210527.pth',
+                    device=device
                 )
-                print("✅ MMPose initialized on CPU")
-            except Exception as e2:
-                print(f"❌ Failed to initialize MMPose on CPU: {e2}")
-                self.mmpose_inferencer = None
+                print("✅ MMPose VideoPose3D initialized")
+            except Exception as e:
+                print(f"❌ Failed to initialize VideoPose3D: {e}")
+            
+            # SimpleBaseline3D
+            try:
+                self.mmpose_simplebaseline3d = MMPoseInferencer(
+                    pose3d='configs/body_3d_keypoint/image_pose_lift/h36m/image-pose-lift_tcn_8xb64-200e_h36m.py', 
+                    pose3d_weights='https://download.openmmlab.com/mmpose/body3d/simple_baseline/simple3Dbaseline_h36m-f0ad73a4_20210419.pth',
+                    device=device
+                )
+                print("✅ MMPose SimpleBaseline3D initialized")
+            except Exception as e:
+                print(f"❌ Failed to initialize SimpleBaseline3D: {e}")
+            
+            # MotionBERT
+            try:
+                self.mmpose_motionbert = MMPoseInferencer(
+                    pose3d='configs/body_3d_keypoint/motionbert/h36m/motionbert_dstformer-ft-243frm_8xb32-120e_h36m.py',
+                    pose3d_weights='https://download.openmmlab.com/mmpose/v1/body_3d_keypoint/pose_lift/h36m/motionbert_ft_h36m-d80af323_20230531.pth',
+                    device=device
+                )
+                print("✅ MMPose MotionBERT initialized")
+            except Exception as e:
+                print(f"❌ Failed to initialize MotionBERT: {e}")
+                
+        except ImportError:
+            print("❌ MMPose not available")
     
     def init_realsense(self):
         """Initialize RealSense camera."""
@@ -108,10 +126,6 @@ class RealSensePoseEstimator:
             align_to = rs.stream.color
             self.align = rs.align(align_to)
             
-            # Get camera intrinsics
-            color_stream = profile.get_stream(rs.stream.color)
-            self.color_intrinsics = color_stream.as_video_stream_profile().get_intrinsics()
-            
             print("✅ RealSense camera initialized successfully")
             return True
             
@@ -127,15 +141,12 @@ class RealSensePoseEstimator:
                 aligned_frames = self.align.process(frames)
                 
                 color_frame = aligned_frames.get_color_frame()
-                depth_frame = aligned_frames.get_depth_frame()
                 
-                if color_frame and depth_frame:
+                if color_frame:
                     color_image = np.asanyarray(color_frame.get_data())
-                    depth_image = np.asanyarray(depth_frame.get_data())
                     
                     with self.frame_lock:
                         self.current_frame = color_image.copy()
-                        self.current_depth = depth_image.copy()
                         
             except Exception as e:
                 if self.running:
@@ -146,8 +157,8 @@ class RealSensePoseEstimator:
         """Convert MediaPipe 33 keypoints to H36M 17 keypoints format."""
         h36m_keypoints = np.zeros((17, 3))
         
-        # H36M Index 0: Hip (Root) - Midpoint of left and right hips
-        h36m_keypoints[0] = (mp_keypoints[23] + mp_keypoints[24]) / 2
+        # H36M Index mapping
+        h36m_keypoints[0] = (mp_keypoints[23] + mp_keypoints[24]) / 2  # Hip (Root)
         h36m_keypoints[1] = mp_keypoints[24]  # Right Hip
         h36m_keypoints[2] = mp_keypoints[26]  # Right Knee
         h36m_keypoints[3] = mp_keypoints[28]  # Right Ankle
@@ -196,13 +207,13 @@ class RealSensePoseEstimator:
             print(f"Error in MediaPipe pose estimation: {e}")
             return None
     
-    def get_mmpose_pose(self, image):
-        """Get MMPose 3D pose estimation for an image."""
-        if not self.mmpose_inferencer:
+    def extract_mmpose_3d_keypoints(self, mmpose_inferencer, image):
+        """Extract 3D keypoints from MMPose inferencer results."""
+        if mmpose_inferencer is None:
             return None
         
         try:
-            results_gen = self.mmpose_inferencer(image, show=False, out_dir=None)
+            results_gen = mmpose_inferencer(image, show=False, out_dir=None)
             results_list = list(results_gen)
             
             if len(results_list) > 0:
@@ -230,11 +241,13 @@ class RealSensePoseEstimator:
             return None
             
         except Exception as e:
-            print(f"Error in MMPose 3D estimation: {e}")
+            print(f"Error in MMPose estimation: {e}")
             return None
     
     def plot_3d_skeleton(self, ax, joints_3d, title, color='red', is_mediapipe=False, is_mmpose=False):
         """Plot 3D skeleton on given axis."""
+        ax.clear()
+        
         if joints_3d is None:
             ax.text(0.5, 0.5, 0.5, 'No Pose\nDetected', ha='center', va='center', fontsize=12)
             ax.set_title(title)
@@ -249,9 +262,6 @@ class RealSensePoseEstimator:
         if is_mmpose:
             # For MMPose: apply X-axis negation
             joints_centered[:, 0] = -joints_centered[:, 0]
-        
-        # Clear previous plot
-        ax.clear()
         
         # Plot joints
         ax.scatter(joints_centered[:, 0], joints_centered[:, 1], joints_centered[:, 2], 
@@ -284,16 +294,6 @@ class RealSensePoseEstimator:
             ax.set_ylim(mid_y - max_range, mid_y + max_range)
             ax.set_zlim(mid_z - max_range, mid_z + max_range)
     
-    def calculate_fps(self):
-        """Calculate current FPS."""
-        current_time = time.time()
-        self.fps_counter.append(current_time - self.last_time)
-        self.last_time = current_time
-        
-        if len(self.fps_counter) > 0:
-            return len(self.fps_counter) / sum(self.fps_counter)
-        return 0
-    
     def run_realtime(self):
         """Run real-time pose estimation."""
         if not self.init_realsense():
@@ -308,13 +308,23 @@ class RealSensePoseEstimator:
         
         # Set up matplotlib for real-time plotting
         plt.ion()
-        fig = plt.figure(figsize=(15, 5))
+        fig = plt.figure(figsize=(18, 10))
         
-        ax1 = fig.add_subplot(1, 3, 1)
-        ax2 = fig.add_subplot(1, 3, 2, projection='3d')
-        ax3 = fig.add_subplot(1, 3, 3, projection='3d')
+        # Create subplot layout: 2 rows, 3 columns
+        ax1 = fig.add_subplot(2, 3, 1)  # RGB Image
+        ax2 = fig.add_subplot(2, 3, 2, projection='3d')  # MediaPipe
+        ax3 = fig.add_subplot(2, 3, 3, projection='3d')  # VideoPose3D
+        ax4 = fig.add_subplot(2, 3, 4, projection='3d')  # SimpleBaseline3D
+        ax5 = fig.add_subplot(2, 3, 5, projection='3d')  # MotionBERT
+        ax6 = fig.add_subplot(2, 3, 6)  # Status/Info
         
-        print("Starting real-time pose estimation... Press 'q' to quit")
+        print("Starting real-time multi-model pose estimation...")
+        print("Models available:")
+        print(f"- MediaPipe: {'✅' if self.mp_landmarker else '❌'}")
+        print(f"- VideoPose3D: {'✅' if self.mmpose_videopose3d else '❌'}")
+        print(f"- SimpleBaseline3D: {'✅' if self.mmpose_simplebaseline3d else '❌'}")
+        print(f"- MotionBERT: {'✅' if self.mmpose_motionbert else '❌'}")
+        print("Close the window to quit...")
         
         try:
             while self.running:
@@ -327,7 +337,9 @@ class RealSensePoseEstimator:
                 
                 # Get pose estimations
                 mp_3d = self.get_mediapipe_pose(frame)
-                mmpose_3d = self.get_mmpose_pose(frame)
+                vp3d_result = self.extract_mmpose_3d_keypoints(self.mmpose_videopose3d, frame)
+                sb3d_result = self.extract_mmpose_3d_keypoints(self.mmpose_simplebaseline3d, frame)
+                mb_result = self.extract_mmpose_3d_keypoints(self.mmpose_motionbert, frame)
                 
                 # Update plots
                 # Original RGB image
@@ -339,8 +351,26 @@ class RealSensePoseEstimator:
                 # MediaPipe 3D pose
                 self.plot_3d_skeleton(ax2, mp_3d, "MediaPipe 3D", color='green', is_mediapipe=True)
                 
-                # MMPose 3D pose
-                self.plot_3d_skeleton(ax3, mmpose_3d, "MMPose 3D", color='purple', is_mmpose=True)
+                # VideoPose3D
+                self.plot_3d_skeleton(ax3, vp3d_result, "VideoPose3D", color='purple', is_mmpose=True)
+                
+                # SimpleBaseline3D
+                self.plot_3d_skeleton(ax4, sb3d_result, "SimpleBaseline3D", color='orange', is_mmpose=True)
+                
+                # MotionBERT
+                self.plot_3d_skeleton(ax5, mb_result, "MotionBERT", color='red', is_mmpose=True)
+                
+                # Status information
+                ax6.clear()
+                ax6.text(0.1, 0.9, "Model Status:", transform=ax6.transAxes, fontsize=12, weight='bold')
+                ax6.text(0.1, 0.8, f"MediaPipe: {'✅' if mp_3d is not None else '❌'}", transform=ax6.transAxes, fontsize=10)
+                ax6.text(0.1, 0.7, f"VideoPose3D: {'✅' if vp3d_result is not None else '❌'}", transform=ax6.transAxes, fontsize=10)
+                ax6.text(0.1, 0.6, f"SimpleBaseline3D: {'✅' if sb3d_result is not None else '❌'}", transform=ax6.transAxes, fontsize=10)
+                ax6.text(0.1, 0.5, f"MotionBERT: {'✅' if mb_result is not None else '❌'}", transform=ax6.transAxes, fontsize=10)
+                ax6.text(0.1, 0.3, f"Frame: {frame.shape[1]}x{frame.shape[0]}", transform=ax6.transAxes, fontsize=10)
+                ax6.text(0.1, 0.2, "Close window to quit", transform=ax6.transAxes, fontsize=10)
+                ax6.set_title("Status")
+                ax6.axis('off')
                 
                 plt.tight_layout()
                 plt.draw()
@@ -367,16 +397,19 @@ class RealSensePoseEstimator:
         print("✅ Cleanup completed")
 
 def main():
-    """Main function to run real-time pose estimation."""
-    estimator = RealSensePoseEstimator()
+    """Main function to run real-time multi-model pose estimation."""
+    estimator = RealSenseMultiPoseEstimator()
     
-    print("Real-time Human Pose Estimation with RealSense")
-    print("=" * 50)
+    print("Real-time Multi-Model Human Pose Estimation with RealSense")
+    print("=" * 60)
     print("This application will:")
-    print("- Capture RGB and depth streams from RealSense")
-    print("- Run MediaPipe and MMPose 3D pose estimation")
+    print("- Capture RGB stream from RealSense")
+    print("- Run MediaPipe 3D pose estimation")
+    print("- Run multiple MMPose 3D models:")
+    print("  • VideoPose3D")
+    print("  • SimpleBaseline3D") 
+    print("  • MotionBERT")
     print("- Display real-time 3D pose visualization")
-    print("- Show FPS and pose statistics")
     print("")
     print("Requirements:")
     print("- Intel RealSense camera connected")

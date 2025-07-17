@@ -26,6 +26,10 @@ except ImportError:
     MEDIAPIPE_AVAILABLE = False
     print("WARNING: MediaPipe not available")
 
+# Add the current directory to path
+sys.path.insert(0, '/home/oliver/Documents/MotionBERT')
+
+# No MotionBERT imports needed
 
 # H36M dataset configuration
 DATA_PATH = "/home/oliver/Documents/data/h36m"
@@ -187,35 +191,91 @@ def get_mediapipe_pose(image_path):
         print(f"Error in MediaPipe pose estimation: {e}")
         return None
 
-def plot_comparison(image, gt_3d, mp_3d, mmpose_3d, idx):
-    """Plot comparison between ground truth, MediaPipe, and MMPose 3D poses."""
-    fig = plt.figure(figsize=(16, 10))
+def extract_mmpose_3d_keypoints(mmpose_inferencer, image, model_name):
+    """Extract 3D keypoints from MMPose inferencer results."""
+    if mmpose_inferencer is None:
+        return None
+    
+    try:
+        # Run MMPose inference using the new API
+        results_gen = mmpose_inferencer(image, show=False, out_dir=None)
+        results_list = list(results_gen)
+        
+        if len(results_list) > 0:
+            result = results_list[0]
+            
+            # Extract predictions
+            if 'predictions' in result:
+                predictions = result['predictions']
+                if len(predictions) > 0:
+                    persons_list = predictions[0]
+                    if len(persons_list) > 0:
+                        person = persons_list[0]
+                        
+                        # Extract 3D keypoints
+                        if 'keypoints' in person:
+                            keypoints_list = person['keypoints']
+                            
+                            # Convert to numpy array (3D keypoints)
+                            keypoints_3d = np.zeros((len(keypoints_list), 3))
+                            for i, kpt in enumerate(keypoints_list):
+                                if len(kpt) >= 3:
+                                    keypoints_3d[i, 0] = kpt[0]  # x
+                                    keypoints_3d[i, 1] = kpt[1]  # y
+                                    keypoints_3d[i, 2] = kpt[2]  # z
+                            
+                            print(f"✅ {model_name} pose estimated with shape: {keypoints_3d.shape}")
+                            return keypoints_3d
+        
+        print(f"❌ {model_name} pose estimation failed")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error in {model_name} estimation: {e}")
+        return None
+
+def plot_comparison(image, gt_3d, mp_3d, mmpose_videopose3d, mmpose_simplebaseline3d, mmpose_motionbert, idx):
+    """Plot comparison between ground truth, MediaPipe, and three MMPose 3D models."""
+    fig = plt.figure(figsize=(18, 12))
     
     # Original image
-    ax1 = fig.add_subplot(2, 2, 1)
+    ax1 = fig.add_subplot(3, 2, 1)
     ax1.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     ax1.set_title(f"H36M Image {idx}")
     ax1.axis('off')
     
     # Ground truth 3D pose (using visualize_h36m.py coordinate system)
-    ax2 = fig.add_subplot(2, 2, 2, projection='3d')
-    plot_3d_skeleton(ax2, gt_3d, "Ground Truth 3D (visualize_h36m)", color='blue', is_ground_truth=True)
+    ax2 = fig.add_subplot(3, 2, 2, projection='3d')
+    plot_3d_skeleton(ax2, gt_3d, "Ground Truth 3D (H36M)", color='blue', is_ground_truth=True)
     
     # MediaPipe converted 3D pose
-    ax3 = fig.add_subplot(2, 2, 3, projection='3d')
+    ax3 = fig.add_subplot(3, 2, 3, projection='3d')
     if mp_3d is not None:
         plot_3d_skeleton(ax3, mp_3d, "MediaPipe 3D (H36M format)", color='green', is_mediapipe=True)
     else:
         ax3.text(0.5, 0.5, 0.5, 'MediaPipe\nNot Available', ha='center', va='center', fontsize=12)
         ax3.set_title("MediaPipe 3D (H36M format)")
     
-    # MMPose 3D pose
-    ax4 = fig.add_subplot(2, 2, 4, projection='3d')
-    if mmpose_3d is not None:
-        plot_3d_skeleton(ax4, mmpose_3d, "MMPose 3D (Direct Detection)", color='purple', is_mmpose=True)
+    # MMPose Human3D
+    ax4 = fig.add_subplot(3, 2, 4, projection='3d')
+    if mmpose_videopose3d is not None:
+        plot_3d_skeleton(ax4, mmpose_videopose3d, "MMPose Human3D", color='purple', is_mmpose=True)
     else:
-        ax4.text(0.5, 0.5, 0.5, 'MMPose\nNot Available', ha='center', va='center', fontsize=12)
-        ax4.set_title("MMPose 3D (Direct Detection)")
+        ax4.set_title("MMPose Human3D")
+    
+    # MMPose SimpleBaseline3D
+    ax5 = fig.add_subplot(3, 2, 5, projection='3d')
+    if mmpose_simplebaseline3d is not None:
+        plot_3d_skeleton(ax5, mmpose_simplebaseline3d, "MMPose SimpleBaseline3D", color='orange', is_mmpose=True)
+    else:
+        ax5.set_title("MMPose SimpleBaseline3D")
+    
+    # MMPose MotionBERT
+    ax6 = fig.add_subplot(3, 2, 6, projection='3d')
+    if mmpose_motionbert is not None:
+        plot_3d_skeleton(ax6, mmpose_motionbert, "MMPose MotionBERT", color='red', is_mmpose=True)
+    else:
+        ax6.set_title("MMPose MotionBERT")
     
     plt.tight_layout()
     plt.show()
@@ -312,25 +372,42 @@ def main():
     
     # No MotionBERT initialization needed
     
-    # Initialize MMPose 3D estimator (without camera)
+    # Initialize MMPose 3D inferencers (without camera)
+    from mmpose.apis import MMPoseInferencer
+    device = 'cuda:0' if 'cuda' in 'cuda:0' else 'cpu'
+    
+    mmpose_videopose3d = None
+    mmpose_simplebaseline3d = None
+    mmpose_motionbert = None
     try:
-        from mmpose.apis import MMPoseInferencer
-        mmpose_inferencer = MMPoseInferencer(
-            pose3d='human3d',
-            device='cuda:0' if 'cuda' in 'cuda:0' else 'cpu'
+        mmpose_videopose3d = MMPoseInferencer(
+            pose3d='configs/body_3d_keypoint/video_pose_lift/h36m/video-pose-lift_tcn-243frm-supv_8xb128-160e_h36m.py', 
+            pose3d_weights='https://download.openmmlab.com/mmpose/body3d/videopose/videopose_h36m_243frames_fullconv_supervised-880bea25_20210527.pth',
+            device=device
         )
-        print("✅ MMPose 3D inferencer initialized successfully")
+        print("✅ MMPose VideoPose3D inferencer initialized successfully")
     except Exception as e:
-        print(f"❌ Failed to initialize MMPose 3D inferencer: {e}")
-        try:
-            mmpose_inferencer = MMPoseInferencer(
-                pose3d='human3d',
-                device='cpu'
-            )
-            print("✅ MMPose 3D inferencer initialized on CPU")
-        except Exception as e2:
-            print(f"❌ Failed to initialize MMPose 3D on CPU: {e2}")
-            mmpose_inferencer = None
+        print(f"❌ Failed to initialize MMPose VideoPose3D: {e}")
+    
+    try:
+        mmpose_simplebaseline3d = MMPoseInferencer(
+            pose3d='configs/body_3d_keypoint/image_pose_lift/h36m/image-pose-lift_tcn_8xb64-200e_h36m.py', 
+            pose3d_weights='https://download.openmmlab.com/mmpose/body3d/simple_baseline/simple3Dbaseline_h36m-f0ad73a4_20210419.pth',
+            device=device
+        )
+        print("✅ MMPose SimpleBaseline3D inferencer initialized")
+    except Exception as e:
+        print(f"❌ Failed to initialize MMPose SimpleBaseline3D: {e}")
+    
+    try:
+        mmpose_motionbert = MMPoseInferencer(
+            pose3d='configs/body_3d_keypoint/motionbert/h36m/motionbert_dstformer-ft-243frm_8xb32-120e_h36m.py',
+            pose3d_weights='https://download.openmmlab.com/mmpose/v1/body_3d_keypoint/pose_lift/h36m/motionbert_ft_h36m-d80af323_20230531.pth',
+            device=device
+        )
+        print("✅ MMPose MotionBERT inferencer initialized")
+    except Exception as e:
+        print(f"❌ Failed to initialize MMPose MotionBERT: {e}")
     
     # Load H36M data
     print("Loading H36M dataset...")
@@ -371,62 +448,34 @@ def main():
         else:
             print("❌ MediaPipe pose estimation failed")
         
-        # Get MMPose 3D pose estimation
-        mmpose_3d = None
-        if mmpose_inferencer is not None:
-            print("Running MMPose 3D pose estimation...")
-            try:
-                # Run MMPose inference using the new API
-                results_gen = mmpose_inferencer(image, show=False, out_dir=None)
-                results_list = list(results_gen)
-                
-                if len(results_list) > 0:
-                    result = results_list[0]
-                    
-                    # Extract predictions
-                    if 'predictions' in result:
-                        predictions = result['predictions']
-                        if len(predictions) > 0:
-                            persons_list = predictions[0]
-                            if len(persons_list) > 0:
-                                person = persons_list[0]
-                                
-                                # Extract 3D keypoints
-                                if 'keypoints' in person:
-                                    keypoints_list = person['keypoints']
-                                    
-                                    # Convert to numpy array (3D keypoints)
-                                    keypoints_3d = np.zeros((len(keypoints_list), 3))
-                                    for i, kpt in enumerate(keypoints_list):
-                                        if len(kpt) >= 3:
-                                            keypoints_3d[i, 0] = kpt[0]  # x
-                                            keypoints_3d[i, 1] = kpt[1]  # y
-                                            keypoints_3d[i, 2] = kpt[2]  # z
-                                    
-                                    mmpose_3d = keypoints_3d
-                                    print(f"✅ MMPose 3D pose estimated with shape: {mmpose_3d.shape}")
-                
-                if mmpose_3d is None:
-                    print("❌ MMPose 3D pose estimation failed")
-                    
-            except Exception as e:
-                print(f"❌ Error in MMPose 3D estimation: {e}")
+        print("Running MMPose 3D pose estimations...")
+        mmpose_vp3d_result = extract_mmpose_3d_keypoints(mmpose_videopose3d, image, "Human3D (VideoPose3D)")
+        mmpose_sb3d_result = extract_mmpose_3d_keypoints(mmpose_simplebaseline3d, image, "Human3D (SimpleBaseline3D)")
+        mmpose_mb_result = extract_mmpose_3d_keypoints(mmpose_motionbert, image, "Human3D (MotionBERT)")
         
         # Plot comparison
-        plot_comparison(image, gt_3d, mp_3d, mmpose_3d, idx)
+        plot_comparison(image, gt_3d, mp_3d, mmpose_vp3d_result, mmpose_sb3d_result, mmpose_mb_result, idx)
         
         # Print some statistics
         print(f"Ground truth range: X[{gt_3d[:,0].min():.3f}, {gt_3d[:,0].max():.3f}] "
               f"Y[{gt_3d[:,1].min():.3f}, {gt_3d[:,1].max():.3f}] "
               f"Z[{gt_3d[:,2].min():.3f}, {gt_3d[:,2].max():.3f}]")
         if mp_3d is not None:
-            print(f"MediaPipe range:    X[{mp_3d[:,0].min():.3f}, {mp_3d[:,0].max():.3f}] "
+            print(f"MediaPipe range:     X[{mp_3d[:,0].min():.3f}, {mp_3d[:,0].max():.3f}] "
                   f"Y[{mp_3d[:,1].min():.3f}, {mp_3d[:,1].max():.3f}] "
                   f"Z[{mp_3d[:,2].min():.3f}, {mp_3d[:,2].max():.3f}]")
-        if mmpose_3d is not None:
-            print(f"MMPose range:       X[{mmpose_3d[:,0].min():.3f}, {mmpose_3d[:,0].max():.3f}] "
-                  f"Y[{mmpose_3d[:,1].min():.3f}, {mmpose_3d[:,1].max():.3f}] "
-                  f"Z[{mmpose_3d[:,2].min():.3f}, {mmpose_3d[:,2].max():.3f}]")
+        if mmpose_vp3d_result is not None:
+            print(f"VideoPose3D:    X[{mmpose_vp3d_result[:,0].min():.3f}, {mmpose_vp3d_result[:,0].max():.3f}] "
+                  f"Y[{mmpose_vp3d_result[:,1].min():.3f}, {mmpose_vp3d_result[:,1].max():.3f}] "
+                  f"Z[{mmpose_vp3d_result[:,2].min():.3f}, {mmpose_vp3d_result[:,2].max():.3f}]")
+        if mmpose_sb3d_result is not None:
+            print(f"SimpleBaseline3D:    X[{mmpose_sb3d_result[:,0].min():.3f}, {mmpose_sb3d_result[:,0].max():.3f}] "
+                  f"Y[{mmpose_sb3d_result[:,1].min():.3f}, {mmpose_sb3d_result[:,1].max():.3f}] "
+                  f"Z[{mmpose_sb3d_result[:,2].min():.3f}, {mmpose_sb3d_result[:,2].max():.3f}]")
+        if mmpose_mb_result is not None:
+            print(f"MotionBERT:    X[{mmpose_mb_result[:,0].min():.3f}, {mmpose_mb_result[:,0].max():.3f}] "
+                  f"Y[{mmpose_mb_result[:,1].min():.3f}, {mmpose_mb_result[:,1].max():.3f}] "
+                  f"Z[{mmpose_mb_result[:,2].min():.3f}, {mmpose_mb_result[:,2].max():.3f}]")
     
     # Cleanup MMPose inferencer (no cleanup needed for MMPoseInferencer)
     print("✅ Test completed successfully")
