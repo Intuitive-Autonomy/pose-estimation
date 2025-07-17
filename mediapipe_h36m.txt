@@ -1,0 +1,19 @@
+| **H36M Index** | **H36M Joint Name** | **MediaPipe Index**     | **Details / Notes**                         |
+| -------------- | ------------------- | ----------------------- | ------------------------------------------- |
+| 0              | Hip (Root)          | (23 + 24) / 2           | Midpoint of left and right hips             |
+| 1              | Right Hip           | 24                      | Right Hip                                   |
+| 2              | Right Knee          | 26                      | Right Knee                                  |
+| 3              | Right Ankle         | 28                      | Right Ankle                                 |
+| 4              | Left Hip            | 23                      | Left Hip                                    |
+| 5              | Left Knee           | 25                      | Left Knee                                   |
+| 6              | Left Ankle          | 27                      | Left Ankle                                  |
+| 7              | Spine               | (23 + 24 + 11 + 12) / 4 | Center between hips and shoulders (approx.) |
+| 8              | Thorax              | (11 + 12) / 2           | Midpoint between shoulders                  |
+| 9              | Nose                | 0                       | Nose                                        |
+| 10             | Head                | (2 + 5) / 2             | Midpoint between eyes                       |
+| 11             | Left Shoulder       | 11                      | Left Shoulder                               |
+| 12             | Left Elbow          | 13                      | Left Elbow                                  |
+| 13             | Left Wrist          | 15                      | Left Wrist                                  |
+| 14             | Right Shoulder      | 12                      | Right Shoulder                              |
+| 15             | Right Elbow         | 14                      | Right Elbow                                 |
+| 16             | Right Wrist         | 16                      | Right Wrist                                 |
